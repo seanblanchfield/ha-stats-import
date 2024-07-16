@@ -42,11 +42,6 @@ def import_statistics(source_db, target_db, batch_size=1000, dry_run=False):
     
     # Prepare the insert statement
     column_names = ['id', 'created', 'metadata_id', 'start', 'mean', 'min', 'max', 'last_reset', 'state', 'sum', 'created_ts', 'start_ts', 'last_reset_ts']
-    insert_sql = f"""
-    INSERT OR REPLACE INTO statistics 
-    ({", ".join(column_names)})
-    VALUES ({"?, " * (len(column_names) - 1) + "?"})
-    """
     
     # Process rows in batches
     skip_all = set()
@@ -55,6 +50,11 @@ def import_statistics(source_db, target_db, batch_size=1000, dry_run=False):
     name_mappings = {}
 
     for table_name in ('statistics_short_term', 'statistics'):
+        insert_sql = f"""
+        INSERT OR REPLACE INTO {table_name} 
+        ({", ".join(column_names)})
+        VALUES ({"?, " * (len(column_names) - 1) + "?"})
+        """
         # Get the total number of rows
         source_cur.execute(f"SELECT COUNT(*) FROM {table_name}")
         total_rows = source_cur.fetchone()[0]
