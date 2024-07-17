@@ -1,7 +1,6 @@
 import sqlite3
 import argparse
-import sys
-
+import datetime
 
 def get_example_value(source_cur, metadata_id):
     source_cur.execute("""
@@ -152,18 +151,77 @@ def import_statistics(source_db, target_db, batch_size=1000, dry_run=False):
     source_conn.close()
     target_conn.close()
 
+
+def find_declining_sums(db_path, since_ts):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Get all metadata entries
+    cursor.execute("SELECT id, statistic_id FROM statistics_meta")
+    metadata_entries = cursor.fetchall()
+
+    anomalies = []
+
+    for metadata_id, statistic_id in metadata_entries:
+        # Get the maximum sum and its timestamp for this metadata_id
+        cursor.execute("""
+            SELECT sum, created_ts
+            FROM statistics
+            WHERE metadata_id = ? AND sum IS NOT NULL AND created_ts >= ?
+            ORDER BY sum DESC, created_ts DESC
+            LIMIT 1
+        """, (metadata_id,since_ts))
+        max_sum_row = cursor.fetchone()
+
+        if max_sum_row is None:
+            continue  # No data for this metadata_id
+
+        max_sum, max_sum_ts = max_sum_row
+
+        # Find any rows with a zero sum and a later timestamp
+        cursor.execute("""
+            SELECT sum, created_ts, id
+            FROM statistics
+            WHERE metadata_id = ? AND sum = 0 AND created_ts > ? AND  created_ts >= ? AND sum IS NOT NULL
+            ORDER BY created_ts ASC
+            LIMIT 1
+        """, (metadata_id, max_sum_ts, since_ts))
+        declining_sum_row = cursor.fetchone()
+
+        if declining_sum_row:
+            declining_sum, declining_ts, row_id = declining_sum_row
+            anomalies.append((metadata_id, statistic_id, max_sum, max_sum_ts, declining_sum, declining_ts, row_id))
+
+    conn.close()
+    return anomalies
+
+def find_anomalies(db_path, date_since):
+    # convert the string `date_since` into a unix timestamp
+    since_ts = datetime.datetime.strptime(date_since, '%Y-%m-%d').timestamp()
+    anomalies = find_declining_sums(db_path, since_ts)
+    print(f"Found {len(anomalies)} anomalies")
+    for metadata_id, statistic_id, max_sum, max_sum_ts, declining_sum, declining_ts, row_id in anomalies:
+        # convert unix timestamps into friendly date strings
+        max_sum_ts = datetime.datetime.fromtimestamp(max_sum_ts).strftime('%Y-%m-%d')
+        declining_ts = datetime.datetime.fromtimestamp(declining_ts).strftime('%Y-%m-%d')
+        print(f"Found anomaly for metadata_id {metadata_id}, statistic_id {statistic_id}. Having sum {max_sum} at {max_sum_ts}. Declining sum {declining_sum} at {declining_ts}.")
+       
+
 def main():
     parser = argparse.ArgumentParser(description='Import statistics from source database to target database.')
     parser.add_argument('source_db', help='Path to the source database file')
     parser.add_argument('target_db', help='Path to the target database file')
     parser.add_argument('--batch-size', type=int, default=1000, help='Number of rows to process in each batch')
     parser.add_argument('--dry-run', action='store_true', help='Perform a dry run without modifying the target database')
-
+    parser.add_argument('--find-anomalies-since', type=str, default=None, help='Find anomalies since the given date expressed as YYYY-MM-DD')
     args = parser.parse_args()
     
-    print(f"Importing from {args.source_db} to {args.target_db}")
-    import_statistics(args.source_db, args.target_db, args.batch_size, args.dry_run)
-    print("Import completed.")
+    if args.find_anomalies_since:
+        find_anomalies(args.target_db, args.find_anomalies_since)
+    else:
+        print(f"Importing from {args.source_db} to {args.target_db}")
+        import_statistics(args.source_db, args.target_db, args.batch_size, args.dry_run)
+        print("Import completed.")
 
 if __name__ == "__main__":
     main()
